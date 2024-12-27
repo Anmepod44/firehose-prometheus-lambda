@@ -1,32 +1,5 @@
 package com.example;
 
-/**
- * This class implements an AWS Lambda function that processes Kinesis Firehose events.
- * It extracts metrics from the event records and pushes them to a Prometheus PushGateway.
- * 
- * The main components of this Lambda function are:
- * 
- * - MetricStreamData: A class representing the metric data extracted from the Kinesis Firehose event records.
- * - Value: A class representing the metric values.
- * - KinesisFirehoseResponse: A class representing the response to be sent back to Kinesis Firehose.
- * 
- * The function processes each record in the Kinesis Firehose event, extracts metrics, creates Prometheus gauge metrics,
- * and pushes these metrics to a Prometheus PushGateway.
- * 
- * The metrics include:
- * - Count
- * - Sum
- * - Max
- * - Min
- * 
- * The metrics are named using the format <metric_name>_<metric_type>, where metric_type can be count, sum, max, or min.
- * 
- * The function requires the following environment variables:
- * - PROMETHEUS_PUSHGATEWAY_URL: The URL of the Prometheus PushGateway.
- * 
- * The Lambda execution role must have the necessary permissions to access Kinesis Firehose and CloudWatch Logs.
- */
-
 import com.amazonaws.services.lambda.runtime.Context;
 import com.amazonaws.services.lambda.runtime.RequestHandler;
 import com.amazonaws.services.lambda.runtime.events.KinesisFirehoseEvent;
@@ -35,12 +8,29 @@ import io.prometheus.client.exporter.PushGateway;
 import io.prometheus.client.exporter.common.TextFormat;
 import io.prometheus.client.Gauge;
 import io.prometheus.client.Collector;
+
 import java.io.StringWriter;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Enumeration;
 import java.util.List;
 import java.util.Map;
+import java.io.ByteArrayInputStream;
+import java.util.stream.Stream;
+import java.net.http.HttpRequest;
+import java.net.http.HttpClient;
+import java.net.http.HttpResponse;
+import java.net.URI;
+import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
+import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
+import software.amazon.awssdk.services.sts.auth.StsAssumeRoleCredentialsProvider;
+import software.amazon.awssdk.services.sts.model.AssumeRoleRequest;
+import software.amazon.awssdk.auth.signer.Aws4Signer;
+import software.amazon.awssdk.auth.signer.params.Aws4SignerParams;
+import software.amazon.awssdk.core.signer.Signer;
+import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.http.SdkHttpFullRequest;
+import software.amazon.awssdk.http.SdkHttpMethod;
 
 public class LambdaHandler implements RequestHandler<KinesisFirehoseEvent, LambdaHandler.KinesisFirehoseResponse> {
 
@@ -84,33 +74,88 @@ public class LambdaHandler implements RequestHandler<KinesisFirehoseEvent, Lambd
 
     private List<Gauge> createGauges(MetricStreamData metricStreamData) {
         List<Gauge> gauges = new ArrayList<>();
-        String metricName = sanitize(metricStreamData.getMetricName());
+        String sanitizedMetricName = sanitize(metricStreamData.getMetricName());
 
         Gauge countGauge = Gauge.build()
-                .name(metricName + "_count")
-                .help("Count metric")
-                .labelNames("namespace", "account_id", "region", "dimensions")
+                .name(sanitizedMetricName + "_count")
+                .help("Count of " + sanitizedMetricName)
                 .register();
-        countGauge.labels(metricStreamData.getNamespace(), metricStreamData.getAccountID(), metricStreamData.getRegion(), metricStreamData.getDimensions().toString())
-                .set(metricStreamData.getValue().getCount());
+        countGauge.set(metricStreamData.getValue().getCount());
         gauges.add(countGauge);
 
-        // Similarly create gauges for Sum, Max, Min
+        // Similarly, create gauges for sum, max, and min if needed
         // ...
 
         return gauges;
     }
 
-    // Set the prometheus pushgateway URL  here.
-    private void pushMetricsToPrometheus(List<Gauge> gauges) throws Exception {
-        PushGateway pg = new PushGateway("your-prometheus-pushgateway-url");
-        for (Gauge gauge : gauges) {
-            StringWriter writer = new StringWriter();
-            Enumeration<Collector.MetricFamilySamples> mfs = Collections.enumeration(gauge.collect());
-            TextFormat.write004(writer, mfs);
-            pg.pushAdd(gauge, "job_name");
+private void pushMetricsToPrometheus(List<Gauge> gauges) throws Exception {
+    String prometheusRemoteWriteUrl = System.getenv("PROMETHEUS_REMOTE_WRITE_URL");
+    String awsRegion = System.getenv("AWS_REGION");
+    String awsAmpRoleArn = System.getenv("AWS_AMP_ROLE_ARN");
+
+    HttpClient client = HttpClient.newHttpClient(); // Single HttpClient instance
+
+    for (Gauge gauge : gauges) {
+        // Serialize gauge metrics to text format
+        StringWriter writer = new StringWriter();
+        Enumeration<Collector.MetricFamilySamples> mfs = Collections.enumeration(gauge.collect());
+        TextFormat.write004(writer, mfs);
+        byte[] body = writer.toString().getBytes();
+
+        // AWS Credentials Provider
+        AwsCredentialsProvider credentialsProvider;
+        if (awsAmpRoleArn != null && !awsAmpRoleArn.isEmpty()) {
+            credentialsProvider = StsAssumeRoleCredentialsProvider.builder()
+                    .refreshRequest(AssumeRoleRequest.builder()
+                            .roleArn(awsAmpRoleArn)
+                            .roleSessionName("prometheus-session")
+                            .build())
+                    .build();
+        } else {
+            credentialsProvider = DefaultCredentialsProvider.create();
+        }
+
+        // Build the unsigned SDK HTTP request
+        SdkHttpFullRequest sdkRequest = SdkHttpFullRequest.builder()
+                .uri(URI.create(prometheusRemoteWriteUrl))
+                .method(SdkHttpMethod.POST)
+                .putHeader("Content-Type", "application/x-protobuf")
+                .putHeader("Content-Encoding", "snappy")
+                .putHeader("X-Prometheus-Remote-Write-Version", "0.1.0")
+                .contentStreamProvider(() -> new ByteArrayInputStream(body)) // Stream recreated for each request
+                .build();
+
+        // Sign the request
+        Aws4SignerParams signerParams = Aws4SignerParams.builder()
+                .signingRegion(Region.of(awsRegion))
+                .signingName("aps")
+                .awsCredentials(credentialsProvider.resolveCredentials())
+                .build();
+        Aws4Signer signer = Aws4Signer.create();
+        SdkHttpFullRequest signedRequest = signer.sign(sdkRequest, signerParams);
+
+        // Build the HTTP request from the signed SDK request
+        HttpRequest httpRequest = HttpRequest.newBuilder()
+                .uri(signedRequest.getUri())
+                .method("POST", HttpRequest.BodyPublishers.ofByteArray(body))
+                .headers(signedRequest.headers().entrySet().stream()
+                        .flatMap(entry -> entry.getValue().stream().map(value -> Map.entry(entry.getKey(), value)))
+                        .flatMap(entry -> Stream.of(entry.getKey(), entry.getValue()))
+                        .toArray(String[]::new))
+                .build();
+
+        // Send the request
+        HttpResponse<String> response = client.send(httpRequest, HttpResponse.BodyHandlers.ofString());
+
+        // Check for errors
+        if (response.statusCode() != 200) {
+            throw new RuntimeException("Request to AMP failed with status: " + response.statusCode() + 
+                                       ", body: " + response.body());
         }
     }
+}
+
 
     private String sanitize(String input) {
         return input.replaceAll("[^a-zA-Z0-9_]", "_");
@@ -233,5 +278,9 @@ public class LambdaHandler implements RequestHandler<KinesisFirehoseEvent, Lambd
         public enum Result {
             Ok, Dropped, ProcessingFailed
         }
+    }
+
+    public enum Values {
+        COUNT, SUM, MAX, MIN
     }
 }
