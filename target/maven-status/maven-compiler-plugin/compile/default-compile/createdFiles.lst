@@ -1,6 +1,6 @@
 com/example/LambdaHandler.class
-com/example/LambdaHandler$Value.class
 com/example/LambdaHandler$KinesisFirehoseResponse$Record.class
+com/example/LambdaHandler$Value.class
 com/example/LambdaHandler$Values.class
 com/example/LambdaHandler$MetricStreamData.class
 com/example/LambdaHandler$KinesisFirehoseResponse.class

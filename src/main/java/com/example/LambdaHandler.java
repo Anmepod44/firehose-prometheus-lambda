@@ -28,7 +28,6 @@ import software.amazon.awssdk.services.sts.auth.StsAssumeRoleCredentialsProvider
 import software.amazon.awssdk.services.sts.model.AssumeRoleRequest;
 import software.amazon.awssdk.auth.signer.Aws4Signer;
 import software.amazon.awssdk.auth.signer.params.Aws4SignerParams;
-import software.amazon.awssdk.core.signer.Signer;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.http.SdkHttpFullRequest;
 import software.amazon.awssdk.http.SdkHttpMethod;
@@ -45,26 +44,43 @@ public class LambdaHandler implements RequestHandler<KinesisFirehoseEvent, Lambd
         for (KinesisFirehoseEvent.Record record : firehoseEvent.getRecords()) {
             String data = new String(record.getData().array());
             context.getLogger().log("Decoded data: " + data); // Log the decoded data
+            
+            // Fix: Ensure no extra or empty iteration occurs
             String[] splitRecord = data.split("\n");
-
             for (String x : splitRecord) {
-                if (x.isEmpty()) {
+                if (x.trim().isEmpty()) {
+                    context.getLogger().log("Empty or invalid record skipped.");
                     continue;
                 }
-
+        
                 try {
+                    context.getLogger().log("Processing record: " + x);
                     MetricStreamData metricStreamData = objectMapper.readValue(x, MetricStreamData.class);
                     context.getLogger().log("Parsed MetricStreamData: " + metricStreamData); // Log the parsed object
-
+        
                     // Log individual fields of MetricStreamData
-                    context.getLogger().log("Metric Name: " + metricStreamData.getMetricName());
-                    context.getLogger().log("Value: " + metricStreamData.getValue());
-
+                    String metricName = metricStreamData.getMetricName();
+                    context.getLogger().log("Metric Name: " + (metricName != null ? metricName : "null"));
+        
+                    // Ensure the value field is not null and count is accessible
+                    Double valueCount = (metricStreamData.getValue() != null) 
+                                         ? metricStreamData.getValue().count 
+                                         : null;
+        
+                    context.getLogger().log("Value: " + (valueCount != null ? valueCount : "null"));
+        
+                    // Handle potential null values in metricName
+                    String sanitizedMetricName = (metricStreamData.getMetricName() != null)
+                        ? metricStreamData.getMetricName().replaceAll("[^a-zA-Z0-9]", "_")
+                        : "Unknown_Metric";
+        
+                    context.getLogger().log("Sanitized Metric Name: " + sanitizedMetricName);
+        
                     List<Gauge> gauges = createGauges(metricStreamData, context);
-
+        
                     // Push the metrics to Prometheus
                     pushMetricsToPrometheus(gauges);
-
+        
                     // Add the record to the response
                     KinesisFirehoseResponse.Record responseRecord = new KinesisFirehoseResponse.Record();
                     responseRecord.setRecordId(record.getRecordId());
@@ -76,6 +92,8 @@ public class LambdaHandler implements RequestHandler<KinesisFirehoseEvent, Lambd
                 }
             }
         }
+        
+        
 
         response.setRecords(responseRecords);
         return response;
