@@ -45,6 +45,13 @@
             <version>0.10.0</version>
         </dependency>
 
+        <!-- Protobuf -->
+        <dependency>
+            <groupId>com.google.protobuf</groupId>
+            <artifactId>protobuf-java</artifactId>
+            <version>3.15.8</version>
+        </dependency>
+
         <!-- Prometheus PushGateway -->
         <dependency>
             <groupId>io.prometheus</groupId>
