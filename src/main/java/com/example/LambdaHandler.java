@@ -101,6 +101,7 @@ public class LambdaHandler implements RequestHandler<KinesisFirehoseEvent, Lambd
         return gauges;
     }
 
+    // Set the prometheus pushgateway URL  here.
     private void pushMetricsToPrometheus(List<Gauge> gauges) throws Exception {
         PushGateway pg = new PushGateway("your-prometheus-pushgateway-url");
         for (Gauge gauge : gauges) {
