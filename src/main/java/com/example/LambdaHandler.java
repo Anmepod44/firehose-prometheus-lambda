@@ -4,6 +4,7 @@ import com.amazonaws.services.lambda.runtime.Context;
 import com.amazonaws.services.lambda.runtime.RequestHandler;
 import com.amazonaws.services.lambda.runtime.events.KinesisFirehoseEvent;
 import com.fasterxml.jackson.databind.ObjectMapper;
+
 import io.prometheus.client.exporter.common.TextFormat;
 import io.prometheus.client.Gauge;
 import io.prometheus.client.Collector;
@@ -43,6 +44,7 @@ public class LambdaHandler implements RequestHandler<KinesisFirehoseEvent, Lambd
 
         for (KinesisFirehoseEvent.Record record : firehoseEvent.getRecords()) {
             String data = new String(record.getData().array());
+            context.getLogger().log("Decoded data: " + data); // Log the decoded data
             String[] splitRecord = data.split("\n");
 
             for (String x : splitRecord) {
@@ -52,7 +54,13 @@ public class LambdaHandler implements RequestHandler<KinesisFirehoseEvent, Lambd
 
                 try {
                     MetricStreamData metricStreamData = objectMapper.readValue(x, MetricStreamData.class);
-                    List<Gauge> gauges = createGauges(metricStreamData);
+                    context.getLogger().log("Parsed MetricStreamData: " + metricStreamData); // Log the parsed object
+
+                    // Log individual fields of MetricStreamData
+                    context.getLogger().log("Metric Name: " + metricStreamData.getMetricName());
+                    context.getLogger().log("Value: " + metricStreamData.getValue());
+
+                    List<Gauge> gauges = createGauges(metricStreamData, context);
 
                     // Push the metrics to Prometheus
                     pushMetricsToPrometheus(gauges);
@@ -64,6 +72,7 @@ public class LambdaHandler implements RequestHandler<KinesisFirehoseEvent, Lambd
                     responseRecords.add(responseRecord);
                 } catch (Exception e) {
                     context.getLogger().log("Error processing record: " + e.getMessage());
+                    context.getLogger().log("Exception: " + e.toString()); // Log the exception details
                 }
             }
         }
@@ -122,9 +131,12 @@ public class LambdaHandler implements RequestHandler<KinesisFirehoseEvent, Lambd
 
     }
 
-    private List<Gauge> createGauges(MetricStreamData metricStreamData) {
+    private List<Gauge> createGauges(MetricStreamData metricStreamData, Context context) {
         List<Gauge> gauges = new ArrayList<>();
         String sanitizedMetricName = sanitize(metricStreamData.getMetricName());
+
+        // Log the sanitized metric name
+        context.getLogger().log("Sanitized Metric Name: " + sanitizedMetricName);
 
         Gauge countGauge = Gauge.build()
                 .name(sanitizedMetricName + "_count")
