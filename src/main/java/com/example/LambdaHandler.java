@@ -4,7 +4,6 @@ import com.amazonaws.services.lambda.runtime.Context;
 import com.amazonaws.services.lambda.runtime.RequestHandler;
 import com.amazonaws.services.lambda.runtime.events.KinesisFirehoseEvent;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.prometheus.client.exporter.PushGateway;
 import io.prometheus.client.exporter.common.TextFormat;
 import io.prometheus.client.Gauge;
 import io.prometheus.client.Collector;
