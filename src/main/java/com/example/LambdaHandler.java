@@ -13,6 +13,7 @@ import java.io.StringWriter;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Enumeration;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.io.ByteArrayInputStream;
@@ -72,6 +73,56 @@ public class LambdaHandler implements RequestHandler<KinesisFirehoseEvent, Lambd
         return response;
     }
 
+    public String createMetricNameLabel(String name, Values value) {
+
+        return sanitize(name) + "_" + value.name().toLowerCase();
+
+    }
+
+    public String createNamespaceLabel(String input) {
+
+        // Implementation of createNamespaceLabel method
+
+        return input.replaceAll("[^a-zA-Z0-9]", "_");
+
+    }
+
+        public Map<String, String> createDimensionLabels(Map<String, String> dimensions) {
+
+        Map<String, String> sanitizedDimensions = new HashMap<>();
+
+        for (Map.Entry<String, String> entry : dimensions.entrySet()) {
+
+            sanitizedDimensions.put(sanitize(entry.getKey()), sanitize(entry.getValue()));
+
+        }
+
+        return sanitizedDimensions;
+
+    }
+
+    public Map<String, String> createCustomLabels(String labels) {
+
+        Map<String, String> labelMap = new HashMap<>();
+
+        String[] pairs = labels.split(",");
+
+        for (String pair : pairs) {
+
+            String[] keyValue = pair.split(":");
+
+            if (keyValue.length == 2) {
+
+                labelMap.put(keyValue[0], keyValue[1]);
+
+            }
+
+        }
+
+        return labelMap;
+
+    }
+
     private List<Gauge> createGauges(MetricStreamData metricStreamData) {
         List<Gauge> gauges = new ArrayList<>();
         String sanitizedMetricName = sanitize(metricStreamData.getMetricName());
@@ -83,8 +134,6 @@ public class LambdaHandler implements RequestHandler<KinesisFirehoseEvent, Lambd
         countGauge.set(metricStreamData.getValue().getCount());
         gauges.add(countGauge);
 
-        // Similarly, create gauges for sum, max, and min if needed
-        // ...
 
         return gauges;
     }
@@ -156,8 +205,7 @@ private void pushMetricsToPrometheus(List<Gauge> gauges) throws Exception {
     }
 }
 
-
-    private String sanitize(String input) {
+    public String sanitize(String input) {
         return input.replaceAll("[^a-zA-Z0-9_]", "_");
     }
 
