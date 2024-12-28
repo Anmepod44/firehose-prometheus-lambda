@@ -35,8 +35,12 @@ import software.amazon.awssdk.services.sts.model.AssumeRoleRequest;
 import software.amazon.awssdk.auth.signer.Aws4Signer;
 import software.amazon.awssdk.auth.signer.params.Aws4SignerParams;
 import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.http.HttpExecuteRequest;
+import software.amazon.awssdk.http.HttpExecuteResponse;
 import software.amazon.awssdk.http.SdkHttpFullRequest;
 import software.amazon.awssdk.http.SdkHttpMethod;
+import software.amazon.awssdk.http.apache.ApacheHttpClient;
+import software.amazon.awssdk.http.SdkHttpClient;
 
 public class LambdaHandler implements RequestHandler<KinesisFirehoseEvent, LambdaHandler.KinesisFirehoseResponse> {
 
@@ -202,6 +206,8 @@ public class LambdaHandler implements RequestHandler<KinesisFirehoseEvent, Lambd
                 Enumeration<Collector.MetricFamilySamples> mfs = Collections.enumeration(gauge.collect());
                 TextFormat.write004(writer, mfs);
                 byte[] body = writer.toString().getBytes();
+
+                SdkHttpClient httpClient = ApacheHttpClient.create();
     
                 // Build the unsigned SDK HTTP request
                 SdkHttpFullRequest sdkRequest = SdkHttpFullRequest.builder()
@@ -218,20 +224,27 @@ public class LambdaHandler implements RequestHandler<KinesisFirehoseEvent, Lambd
                         .request(sdkRequest)
                         .putProperty(AwsV4HttpSigner.SERVICE_SIGNING_NAME, "aps")
                         .putProperty(AwsV4HttpSigner.REGION_NAME, "eu-north-1"));
+
+                       HttpExecuteRequest httpExecuteRequest =HttpExecuteRequest.builder()
+                                .request(signedRequest.request())
+                                .contentStreamProvider(signedRequest.payload().orElse(null))
+                                .build();
+
+                HttpExecuteResponse response = httpClient.prepareRequest(httpExecuteRequest).call();
     
                 // Build the HTTP request from the signed SDK request
-                HttpRequest httpRequest = HttpRequest.newBuilder()
-                        .uri(signedRequest.request().getUri())
-                        .method("POST", HttpRequest.BodyPublishers.ofByteArray(body))
-                        .build();
+                // HttpRequest httpRequest = HttpRequest.newBuilder()
+                //         .uri(signedRequest.request().getUri())
+                //         .method("POST", HttpRequest.BodyPublishers.ofByteArray(body))
+                //         .build();
     
-                // Send the request
-                HttpResponse<String> response = client.send(httpRequest, HttpResponse.BodyHandlers.ofString());
+                // // Send the request
+                // HttpResponse<String> response = client.send(httpRequest, HttpResponse.BodyHandlers.ofString());
     
                 // Check for errors
-                if (response.statusCode() != 200) {
-                    throw new RuntimeException("Request to AMP failed with status: " + response.statusCode() +
-                            ", body: " + response.body());
+                if (response.httpResponse().statusCode() != 200) {
+                    throw new RuntimeException("Request to AMP failed with status: " + response.httpResponse().statusCode() +
+                            ", body: " + response.responseBody());
                 }
             }
         }
