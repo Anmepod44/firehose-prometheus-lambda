@@ -16,40 +16,29 @@ public class LambdaInvoker {
     private static final String REGION = "us-west-2"; // Change to your region
 
     public static void main(String[] args) throws IOException {
-        // Initialize Lambda client
         LambdaClient lambdaClient = LambdaClient.builder()
                 .region(Region.of(REGION))
                 .build();
 
-        // Define event type (for demonstration, we'll use a specific event, but you can loop through these)
-        String eventType = "ConditionalCheckFailedRequests";  // Replace with the event you want to test
-
-        // Create the event payload based on the event type
+        String eventType = "ConditionalCheckFailedRequests";  // Event to test
         String jsonPayload = createJsonPayload(eventType);
 
-        // Convert payload to SDKBytes (necessary for Lambda invocation)
         SdkBytes payloadBytes = SdkBytes.fromByteArray(jsonPayload.getBytes(StandardCharsets.UTF_8));
 
-        // Create InvokeRequest
         InvokeRequest invokeRequest = InvokeRequest.builder()
                 .functionName(FUNCTION_NAME)
                 .payload(payloadBytes)
                 .build();
 
-        // Invoke the Lambda function
         InvokeResponse invokeResponse = lambdaClient.invoke(invokeRequest);
-
-        // Get the response
         String responsePayload = invokeResponse.payload().asString(StandardCharsets.UTF_8);
         System.out.println("Lambda Response: " + responsePayload);
 
-        // Close the Lambda client
         lambdaClient.close();
     }
 
     // Method to create an event payload based on the event type
     private static String createJsonPayload(String eventType) {
-        // Construct the JSON payload for each event type
         String eventJson = "";
 
         switch (eventType) {
@@ -123,17 +112,14 @@ public class LambdaInvoker {
 
     // Helper method to generate a base64-encoded payload for an event
     private static String generateEventPayload(String eventName, int value) {
-        // Construct the JSON data
         String eventData = "{\n" +
                 "  \"eventName\": \"" + eventName + "\",\n" +
                 "  \"value\": " + value + "\n" +
                 "}";
 
-        // Base64 encode the event data (as your Lambda expects base64-encoded data)
         String encodedData = Base64.getEncoder().encodeToString(eventData.getBytes(StandardCharsets.UTF_8));
 
-        // Construct the final JSON structure with the base64-encoded data
-        String jsonPayload = "{\n" +
+        return "{\n" +
                 "  \"records\": [\n" +
                 "    {\n" +
                 "      \"recordId\": \"1234567890\",\n" +
@@ -141,7 +127,5 @@ public class LambdaInvoker {
                 "    }\n" +
                 "  ]\n" +
                 "}";
-
-        return jsonPayload;
     }
 }
