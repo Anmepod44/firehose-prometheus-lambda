@@ -4,6 +4,7 @@ import com.amazonaws.auth.AWSCredentials;
 import com.amazonaws.services.lambda.runtime.Context;
 import com.amazonaws.services.lambda.runtime.RequestHandler;
 import com.amazonaws.services.lambda.runtime.events.KinesisFirehoseEvent;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.prometheus.client.exporter.common.TextFormat;
 import io.prometheus.client.Gauge;
@@ -187,7 +188,7 @@ public class LambdaHandler implements RequestHandler<KinesisFirehoseEvent, Lambd
    
             AwsCredentialsProvider credentialsProvider = StsAssumeRoleCredentialsProvider.builder()
             .stsClient(StsClient.create())
-            .refreshRequest(builder -> builder.roleArn(System.getenv("AWS_AMP_ROLE_ARN"))
+            .refreshRequest(builder -> builder.roleArn(awsAmpRoleArn)
                                             .roleSessionName("aps"))
                                             .build();
             AwsCredentials creds=credentialsProvider.resolveCredentials();
@@ -257,6 +258,7 @@ public class LambdaHandler implements RequestHandler<KinesisFirehoseEvent, Lambd
     }
 
     // MetricStreamData class
+    @JsonIgnoreProperties(ignoreUnknown = true)
     public static class MetricStreamData {
         private String metricStreamName;
         private String accountID;
