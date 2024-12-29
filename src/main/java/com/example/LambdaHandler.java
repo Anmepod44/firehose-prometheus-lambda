@@ -5,11 +5,10 @@ import com.amazonaws.services.lambda.runtime.Context;
 import com.amazonaws.services.lambda.runtime.RequestHandler;
 import com.amazonaws.services.lambda.runtime.events.KinesisFirehoseEvent;
 import com.fasterxml.jackson.databind.ObjectMapper;
-
 import io.prometheus.client.exporter.common.TextFormat;
 import io.prometheus.client.Gauge;
 import io.prometheus.client.Collector;
-
+import software.amazon.awssdk.services.sts.auth.StsAssumeRoleCredentialsProvider;
 import java.io.StringWriter;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -31,6 +30,7 @@ import software.amazon.awssdk.auth.credentials.AwsCredentials;
 import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
 import software.amazon.awssdk.auth.signer.params.Aws4SignerParams;
 import software.amazon.awssdk.services.sts.auth.StsAssumeRoleCredentialsProvider;
+import software.amazon.awssdk.services.sts.StsClient;
 import software.amazon.awssdk.services.sts.model.AssumeRoleRequest;
 import software.amazon.awssdk.auth.signer.Aws4Signer;
 import software.amazon.awssdk.auth.signer.params.Aws4SignerParams;
@@ -183,13 +183,15 @@ public class LambdaHandler implements RequestHandler<KinesisFirehoseEvent, Lambd
             String awsRegion = System.getenv("AWS_REGION");
             String awsAmpRoleArn = System.getenv("AWS_AMP_ROLE_ARN");
     
-            HttpClient client = HttpClient.newHttpClient(); // Single HttpClient instance
-    
             // AWS Credentials Provider
-            AwsCredentialsProvider credentialsProvider;
    
-            credentialsProvider = DefaultCredentialsProvider.create();
+            AwsCredentialsProvider credentialsProvider = StsAssumeRoleCredentialsProvider.builder()
+            .stsClient(StsClient.create())
+            .refreshRequest(builder -> builder.roleArn(System.getenv("AWS_AMP_ROLE_ARN"))
+                                            .roleSessionName("aps"))
+                                            .build();
             AwsCredentials creds=credentialsProvider.resolveCredentials();
+
             
     
             // Prepare AwsV4HttpSigner
