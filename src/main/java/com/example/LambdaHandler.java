@@ -15,6 +15,7 @@ import org.apache.http.entity.ByteArrayEntity;
 import org.apache.http.impl.client.CloseableHttpClient;
 import org.apache.http.impl.client.HttpClients;
 import org.apache.http.util.EntityUtils;
+import org.xerial.snappy.Snappy;
 
 import software.amazon.awssdk.auth.credentials.AwsCredentials;
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
@@ -114,7 +115,16 @@ public class LambdaHandler implements RequestHandler<KinesisFirehoseEvent, Lambd
                 StringWriter writer = new StringWriter();
                 Enumeration<Collector.MetricFamilySamples> mfs = Collections.enumeration(gauge.collect());
                 TextFormat.write004(writer, mfs);
+
+                //display the serialized metrics
+                System.out.println("Serialized Metrics: " + writer.toString());
+
+
                 byte[] body = writer.toString().getBytes();
+                byte[] compressedBody = Snappy.compress(body);
+                System.out.println("Request Body (before compression): " + new String(body, StandardCharsets.UTF_8));
+                System.out.println("Request Body (after compression): " + new String(compressedBody, StandardCharsets.UTF_8));
+
 
                 SdkHttpClient httpClient = ApacheHttpClient.create();
     
@@ -133,7 +143,7 @@ public class LambdaHandler implements RequestHandler<KinesisFirehoseEvent, Lambd
                 SignedRequest signedRequest = signer.sign(r -> r.identity(creds)
                         .request(sdkRequest)
                         .putProperty(AwsV4HttpSigner.SERVICE_SIGNING_NAME, "aps")
-                        .putProperty(AwsV4HttpSigner.REGION_NAME, "eu-north-1"));
+                        .putProperty(AwsV4HttpSigner.REGION_NAME, awsRegion));
 
                        HttpExecuteRequest httpExecuteRequest =HttpExecuteRequest.builder()
                                 .request(signedRequest.request())
