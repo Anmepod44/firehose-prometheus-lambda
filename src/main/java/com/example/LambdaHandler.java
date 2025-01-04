@@ -8,15 +8,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.prometheus.client.exporter.common.TextFormat;
 import io.prometheus.client.Gauge;
 import io.prometheus.client.Collector;
-import org.apache.http.HttpEntity;
-import org.apache.http.client.methods.CloseableHttpResponse;
-import org.apache.http.client.methods.HttpPost;
-import org.apache.http.entity.ByteArrayEntity;
-import org.apache.http.impl.client.CloseableHttpClient;
-import org.apache.http.impl.client.HttpClients;
-import org.apache.http.util.EntityUtils;
 import org.xerial.snappy.Snappy;
-
 import software.amazon.awssdk.auth.credentials.AwsCredentials;
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.auth.signer.params.Aws4SignerParams;
@@ -82,99 +74,82 @@ public class LambdaHandler implements RequestHandler<KinesisFirehoseEvent, Lambd
     }
 
     private void pushMetricsToPrometheus(List<Gauge> gauges) throws Exception {
-            String prometheusRemoteWriteUrl = System.getenv("PROMETHEUS_REMOTE_WRITE_URL");
-            String awsRegion = System.getenv("AWS_REGION");
-            String awsAmpRoleArn = System.getenv("AWS_AMP_ROLE_ARN");
+        String prometheusRemoteWriteUrl = System.getenv("PROMETHEUS_REMOTE_WRITE_URL");
+        String awsRegion = System.getenv("AWS_REGION");
+        String awsAmpRoleArn = System.getenv("AWS_AMP_ROLE_ARN");
 
-            String sessionToken=getAuthorizationToken(awsAmpRoleArn, "aps", awsRegion);
-    
-            // AWS Credentials Provider
-   
-            AwsCredentialsProvider credentialsProvider = StsAssumeRoleCredentialsProvider.builder()
-            .stsClient(StsClient.create())
-            .refreshRequest(builder -> builder.roleArn(awsAmpRoleArn)
-                                            .roleSessionName("aps"))
-                                            .build();
-            AwsCredentials creds=credentialsProvider.resolveCredentials();
+        String sessionToken = getAuthorizationToken(awsAmpRoleArn, "aps", awsRegion);
 
-            System.out.println("Credentials: ");
-            System.err.println("Access Key: "+creds.accessKeyId());
-            System.err.println("Secret Key: "+creds.secretAccessKey());
+        AwsCredentialsProvider credentialsProvider = StsAssumeRoleCredentialsProvider.builder()
+                .stsClient(StsClient.create())
+                .refreshRequest(builder -> builder.roleArn(awsAmpRoleArn)
+                                                  .roleSessionName("aps"))
+                .build();
+        AwsCredentials creds = credentialsProvider.resolveCredentials();
 
-            
-            // Prepare AwsV4HttpSigner
-            AwsV4HttpSigner signer = AwsV4HttpSigner.create();
-            Aws4SignerParams signerParams = Aws4SignerParams.builder()
-                    .awsCredentials(credentialsProvider.resolveCredentials())
-                    .signingName("aps")
-                    .signingRegion(Region.of(awsRegion))
+        AwsV4HttpSigner signer = AwsV4HttpSigner.create();
+        Aws4SignerParams signerParams = Aws4SignerParams.builder()
+                .awsCredentials(credentialsProvider.resolveCredentials())
+                .signingName("aps")
+                .signingRegion(Region.of(awsRegion))
+                .build();
+
+        for (Gauge gauge : gauges) {
+            StringWriter writer = new StringWriter();
+            Enumeration<Collector.MetricFamilySamples> mfs = Collections.enumeration(gauge.collect());
+            TextFormat.write004(writer, mfs);
+
+            String serializedMetrics = writer.toString();
+            byte[] body = serializedMetrics.getBytes(StandardCharsets.UTF_8);
+            byte[] compressedBody = Snappy.compress(body);
+
+            System.out.println("Serialized Metrics: " + serializedMetrics);
+            System.out.println("Compressed Body (Hex): " + Arrays.toString(compressedBody));
+
+            SdkHttpClient httpClient = ApacheHttpClient.create();
+
+            SdkHttpFullRequest sdkRequest = SdkHttpFullRequest.builder()
+                    .uri(URI.create(prometheusRemoteWriteUrl))
+                    .method(SdkHttpMethod.POST)
+                    .putHeader("Content-Type", "application/x-protobuf")
+                    .putHeader("Content-Encoding", "snappy")
+                    .putHeader("X-Prometheus-Remote-Write-Version", "0.1.0")
+                    .putHeader("X-Amz-Security-Token", sessionToken)
+                    .contentStreamProvider(() -> new ByteArrayInputStream(compressedBody))
                     .build();
-    
-            for (Gauge gauge : gauges) {
-                // Serialize gauge metrics to text format
-                StringWriter writer = new StringWriter();
-                Enumeration<Collector.MetricFamilySamples> mfs = Collections.enumeration(gauge.collect());
-                TextFormat.write004(writer, mfs);
 
-                //display the serialized metrics
-                System.out.println("Serialized Metrics: " + writer.toString());
+            SignedRequest signedRequest = signer.sign(r -> r.identity(creds)
+                    .request(sdkRequest)
+                    .putProperty(AwsV4HttpSigner.SERVICE_SIGNING_NAME, "aps")
+                    .putProperty(AwsV4HttpSigner.REGION_NAME, awsRegion));
 
+            HttpExecuteRequest httpExecuteRequest = HttpExecuteRequest.builder()
+                    .request(signedRequest.request())
+                    .contentStreamProvider(signedRequest.payload().orElse(null))
+                    .build();
 
-                byte[] body = writer.toString().getBytes();
-                byte[] compressedBody = Snappy.compress(body);
-                System.out.println("Request Body (before compression): " + new String(body, StandardCharsets.UTF_8));
-                System.out.println("Request Body (after compression): " + new String(compressedBody, StandardCharsets.UTF_8));
+            HttpExecuteResponse response = httpClient.prepareRequest(httpExecuteRequest).call();
 
+            if (response.httpResponse().statusCode() != 200) {
+                String responseBody = response.responseBody().map(responseBodyStream -> {
+                    try {
+                        return new String(responseBodyStream.readAllBytes(), StandardCharsets.UTF_8);
+                    } catch (IOException e) {
+                        return "Unable to read response body";
+                    }
+                }).orElse("No response body");
 
-                SdkHttpClient httpClient = ApacheHttpClient.create();
-    
-                // Build the unsigned SDK HTTP request
-                SdkHttpFullRequest sdkRequest = SdkHttpFullRequest.builder()
-                        .uri(URI.create(prometheusRemoteWriteUrl))
-                        .method(SdkHttpMethod.POST)
-                        .putHeader("Content-Type", "application/x-protobuf")
-                        .putHeader("Content-Encoding", "snappy")
-                        .putHeader("X-Prometheus-Remote-Write-Version", "0.1.0")
-                        .putHeader("X-Amz-Security-Token", sessionToken)
-                        .contentStreamProvider(() -> new ByteArrayInputStream(body)) // Stream recreated for each request
-                        .build();
-
-                // Sign the request
-                SignedRequest signedRequest = signer.sign(r -> r.identity(creds)
-                        .request(sdkRequest)
-                        .putProperty(AwsV4HttpSigner.SERVICE_SIGNING_NAME, "aps")
-                        .putProperty(AwsV4HttpSigner.REGION_NAME, awsRegion));
-
-                       HttpExecuteRequest httpExecuteRequest =HttpExecuteRequest.builder()
-                                .request(signedRequest.request())
-                                .contentStreamProvider(signedRequest.payload().orElse(null))
-                                .build();
-
-                HttpExecuteResponse response = httpClient.prepareRequest(httpExecuteRequest).call();
-    
-                if (response.httpResponse().statusCode() != 200) {
-                    String responseBody = response.responseBody().map(responseBodyStream -> {
-                        try {
-                            return new String(responseBodyStream.readAllBytes(), StandardCharsets.UTF_8);
-                        } catch (IOException e) {
-                            return "Unable to read response body";
-                        }
-                    }).orElse("No response body");
-
-                    throw new RuntimeException("Request to AMP failed with status: " + response.httpResponse().statusCode() +
-                            ", body: " + responseBody);
-                }
+                throw new RuntimeException("Request to AMP failed with status: " + response.httpResponse().statusCode() +
+                        ", body: " + responseBody);
             }
         }
-
+    }
 
     private String getAuthorizationToken(String roleArn, String sessionName, String region) {
-        // Create STS client
         StsClient stsClient = StsClient.builder()
                 .region(software.amazon.awssdk.regions.Region.of(region))
                 .build();
 
-        // Assume the role and get temporary credentials
         AssumeRoleRequest assumeRoleRequest = AssumeRoleRequest.builder()
                 .roleArn(roleArn)
                 .roleSessionName(sessionName)
@@ -183,7 +158,7 @@ public class LambdaHandler implements RequestHandler<KinesisFirehoseEvent, Lambd
         AssumeRoleResponse assumeRoleResponse = stsClient.assumeRole(assumeRoleRequest);
         System.out.println("AssumeRoleResponse: " + assumeRoleResponse);
 
-        return assumeRoleResponse.credentials().sessionToken();  // Return the session token for Authorization
+        return assumeRoleResponse.credentials().sessionToken();
     }
 
     private List<Gauge> createGauges(MetricStreamData metricStreamData, Context context) {
