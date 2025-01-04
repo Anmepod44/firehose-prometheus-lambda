@@ -1,6 +1,5 @@
 package com.example;
 
-import com.amazonaws.auth.AWSCredentials;
 import com.amazonaws.services.lambda.runtime.Context;
 import com.amazonaws.services.lambda.runtime.RequestHandler;
 import com.amazonaws.services.lambda.runtime.events.KinesisFirehoseEvent;
@@ -9,39 +8,37 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.prometheus.client.exporter.common.TextFormat;
 import io.prometheus.client.Gauge;
 import io.prometheus.client.Collector;
-import software.amazon.awssdk.services.sts.auth.StsAssumeRoleCredentialsProvider;
-import java.io.StringWriter;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Enumeration;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.io.ByteArrayInputStream;
-import java.util.stream.Stream;
-import java.net.http.HttpRequest;
-import java.net.http.HttpClient;
-import java.net.http.HttpResponse;
-import java.net.URI;
-import software.amazon.awssdk.http.auth.aws.signer.AwsV4HttpSigner;
-import software.amazon.awssdk.http.auth.spi.signer.SignRequest;
-import software.amazon.awssdk.http.auth.spi.signer.SignedRequest;
-import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
+import org.apache.http.HttpEntity;
+import org.apache.http.client.methods.CloseableHttpResponse;
+import org.apache.http.client.methods.HttpPost;
+import org.apache.http.entity.ByteArrayEntity;
+import org.apache.http.impl.client.CloseableHttpClient;
+import org.apache.http.impl.client.HttpClients;
+import org.apache.http.util.EntityUtils;
+
 import software.amazon.awssdk.auth.credentials.AwsCredentials;
-import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
+import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.auth.signer.params.Aws4SignerParams;
-import software.amazon.awssdk.services.sts.auth.StsAssumeRoleCredentialsProvider;
-import software.amazon.awssdk.services.sts.StsClient;
-import software.amazon.awssdk.services.sts.model.AssumeRoleRequest;
-import software.amazon.awssdk.auth.signer.Aws4Signer;
-import software.amazon.awssdk.auth.signer.params.Aws4SignerParams;
-import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.http.HttpExecuteRequest;
+import software.amazon.awssdk.http.SdkHttpClient;
 import software.amazon.awssdk.http.HttpExecuteResponse;
 import software.amazon.awssdk.http.SdkHttpFullRequest;
 import software.amazon.awssdk.http.SdkHttpMethod;
 import software.amazon.awssdk.http.apache.ApacheHttpClient;
-import software.amazon.awssdk.http.SdkHttpClient;
+import software.amazon.awssdk.http.auth.aws.signer.AwsV4HttpSigner;
+import software.amazon.awssdk.http.auth.spi.signer.SignedRequest;
+import software.amazon.awssdk.services.sts.StsClient;
+import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.sts.auth.StsAssumeRoleCredentialsProvider;
+import software.amazon.awssdk.services.sts.model.AssumeRoleRequest;
+import software.amazon.awssdk.services.sts.model.AssumeRoleResponse;
+
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.io.StringWriter;
+import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import java.util.*;
 
 public class LambdaHandler implements RequestHandler<KinesisFirehoseEvent, LambdaHandler.KinesisFirehoseResponse> {
 
@@ -54,135 +51,41 @@ public class LambdaHandler implements RequestHandler<KinesisFirehoseEvent, Lambd
 
         for (KinesisFirehoseEvent.Record record : firehoseEvent.getRecords()) {
             String data = new String(record.getData().array());
-            context.getLogger().log("Decoded data: " + data); // Log the decoded data
-            
-            // Fix: Ensure no extra or empty iteration occurs
+            context.getLogger().log("Decoded data: " + data);
+
             String[] splitRecord = data.split("\n");
             for (String x : splitRecord) {
                 if (x.trim().isEmpty()) {
                     context.getLogger().log("Empty or invalid record skipped.");
                     continue;
                 }
-        
+
                 try {
                     context.getLogger().log("Processing record: " + x);
                     MetricStreamData metricStreamData = objectMapper.readValue(x, MetricStreamData.class);
-                    context.getLogger().log("Parsed MetricStreamData: " + metricStreamData); // Log the parsed object
-        
-                    // Log individual fields of MetricStreamData
-                    String metricName = metricStreamData.getMetricName();
-                    context.getLogger().log("Metric Name: " + (metricName != null ? metricName : "null"));
-        
-                    // Ensure the value field is not null and count is accessible
-                    Double valueCount = (metricStreamData.getValue() != null) 
-                                         ? metricStreamData.getValue().count 
-                                         : null;
-        
-                    context.getLogger().log("Value: " + (valueCount != null ? valueCount : "null"));
-        
-                    // Handle potential null values in metricName
-                    String sanitizedMetricName = (metricStreamData.getMetricName() != null)
-                        ? metricStreamData.getMetricName().replaceAll("[^a-zA-Z0-9]", "_")
-                        : "Unknown_Metric";
-        
-                    context.getLogger().log("Sanitized Metric Name: " + sanitizedMetricName);
-        
                     List<Gauge> gauges = createGauges(metricStreamData, context);
-        
-                    // Push the metrics to Prometheus
                     pushMetricsToPrometheus(gauges);
-        
-                    // Add the record to the response
+
                     KinesisFirehoseResponse.Record responseRecord = new KinesisFirehoseResponse.Record();
                     responseRecord.setRecordId(record.getRecordId());
                     responseRecord.setResult(KinesisFirehoseResponse.Result.Ok);
                     responseRecords.add(responseRecord);
                 } catch (Exception e) {
                     context.getLogger().log("Error processing record: " + e.getMessage());
-                    context.getLogger().log("Exception: " + e.toString()); // Log the exception details
                 }
             }
         }
-        
-        
 
         response.setRecords(responseRecords);
         return response;
     }
 
-    public String createMetricNameLabel(String name, Values value) {
-
-        return sanitize(name) + "_" + value.name().toLowerCase();
-
-    }
-
-    public String createNamespaceLabel(String input) {
-
-        // Implementation of createNamespaceLabel method
-
-        return input.replaceAll("[^a-zA-Z0-9]", "_");
-
-    }
-
-        public Map<String, String> createDimensionLabels(Map<String, String> dimensions) {
-
-        Map<String, String> sanitizedDimensions = new HashMap<>();
-
-        for (Map.Entry<String, String> entry : dimensions.entrySet()) {
-
-            sanitizedDimensions.put(sanitize(entry.getKey()), sanitize(entry.getValue()));
-
-        }
-
-        return sanitizedDimensions;
-
-    }
-
-    public Map<String, String> createCustomLabels(String labels) {
-
-        Map<String, String> labelMap = new HashMap<>();
-
-        String[] pairs = labels.split(",");
-
-        for (String pair : pairs) {
-
-            String[] keyValue = pair.split(":");
-
-            if (keyValue.length == 2) {
-
-                labelMap.put(keyValue[0], keyValue[1]);
-
-            }
-
-        }
-
-        return labelMap;
-
-    }
-
-    private List<Gauge> createGauges(MetricStreamData metricStreamData, Context context) {
-        List<Gauge> gauges = new ArrayList<>();
-        String sanitizedMetricName = sanitize(metricStreamData.getMetricName());
-
-        // Log the sanitized metric name
-        context.getLogger().log("Sanitized Metric Name: " + sanitizedMetricName);
-
-        Gauge countGauge = Gauge.build()
-                .name(sanitizedMetricName + "_count")
-                .help("Count of " + sanitizedMetricName)
-                .register();
-        countGauge.set(metricStreamData.getValue().getCount());
-        gauges.add(countGauge);
-
-
-        return gauges;
-    }
-
-
     private void pushMetricsToPrometheus(List<Gauge> gauges) throws Exception {
             String prometheusRemoteWriteUrl = System.getenv("PROMETHEUS_REMOTE_WRITE_URL");
             String awsRegion = System.getenv("AWS_REGION");
             String awsAmpRoleArn = System.getenv("AWS_AMP_ROLE_ARN");
+
+            String sessionToken=getAuthorizationToken(awsAmpRoleArn, "aps", awsRegion);
     
             // AWS Credentials Provider
    
@@ -193,8 +96,11 @@ public class LambdaHandler implements RequestHandler<KinesisFirehoseEvent, Lambd
                                             .build();
             AwsCredentials creds=credentialsProvider.resolveCredentials();
 
+            System.out.println("Credentials: ");
+            System.err.println("Access Key: "+creds.accessKeyId());
+            System.err.println("Secret Key: "+creds.secretAccessKey());
+
             
-    
             // Prepare AwsV4HttpSigner
             AwsV4HttpSigner signer = AwsV4HttpSigner.create();
             Aws4SignerParams signerParams = Aws4SignerParams.builder()
@@ -219,6 +125,7 @@ public class LambdaHandler implements RequestHandler<KinesisFirehoseEvent, Lambd
                         .putHeader("Content-Type", "application/x-protobuf")
                         .putHeader("Content-Encoding", "snappy")
                         .putHeader("X-Prometheus-Remote-Write-Version", "0.1.0")
+                        .putHeader("X-Amz-Security-Token", sessionToken)
                         .contentStreamProvider(() -> new ByteArrayInputStream(body)) // Stream recreated for each request
                         .build();
 
@@ -235,76 +142,91 @@ public class LambdaHandler implements RequestHandler<KinesisFirehoseEvent, Lambd
 
                 HttpExecuteResponse response = httpClient.prepareRequest(httpExecuteRequest).call();
     
-                // Build the HTTP request from the signed SDK request
-                // HttpRequest httpRequest = HttpRequest.newBuilder()
-                //         .uri(signedRequest.request().getUri())
-                //         .method("POST", HttpRequest.BodyPublishers.ofByteArray(body))
-                //         .build();
-    
-                // // Send the request
-                // HttpResponse<String> response = client.send(httpRequest, HttpResponse.BodyHandlers.ofString());
-    
-                // Check for errors
                 if (response.httpResponse().statusCode() != 200) {
+                    String responseBody = response.responseBody().map(responseBodyStream -> {
+                        try {
+                            return new String(responseBodyStream.readAllBytes(), StandardCharsets.UTF_8);
+                        } catch (IOException e) {
+                            return "Unable to read response body";
+                        }
+                    }).orElse("No response body");
+
                     throw new RuntimeException("Request to AMP failed with status: " + response.httpResponse().statusCode() +
-                            ", body: " + response.responseBody());
+                            ", body: " + responseBody);
                 }
             }
         }
-    
+
+
+    private String getAuthorizationToken(String roleArn, String sessionName, String region) {
+        // Create STS client
+        StsClient stsClient = StsClient.builder()
+                .region(software.amazon.awssdk.regions.Region.of(region))
+                .build();
+
+        // Assume the role and get temporary credentials
+        AssumeRoleRequest assumeRoleRequest = AssumeRoleRequest.builder()
+                .roleArn(roleArn)
+                .roleSessionName(sessionName)
+                .build();
+
+        AssumeRoleResponse assumeRoleResponse = stsClient.assumeRole(assumeRoleRequest);
+        System.out.println("AssumeRoleResponse: " + assumeRoleResponse);
+
+        return assumeRoleResponse.credentials().sessionToken();  // Return the session token for Authorization
+    }
+
+    private List<Gauge> createGauges(MetricStreamData metricStreamData, Context context) {
+        List<Gauge> gauges = new ArrayList<>();
+        String sanitizedMetricName = sanitize(metricStreamData.getMetricName());
+
+        Gauge countGauge = Gauge.build()
+                .name(sanitizedMetricName + "_count")
+                .help("Count of " + sanitizedMetricName)
+                .register();
+        countGauge.set(metricStreamData.getValue().getCount());
+        gauges.add(countGauge);
+
+        return gauges;
+    }
 
     public String sanitize(String input) {
         return input.replaceAll("[^a-zA-Z0-9_]", "_");
     }
 
-    // MetricStreamData class
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class MetricStreamData {
         private String metricStreamName;
-        private String accountID;
-        private String region;
-        private String namespace;
         private String metricName;
-        private Map<String, Object> dimensions;
-        private long timestamp;
         private Value value;
-        private String unit;
 
-        // Getters and setters
-        public String getMetricStreamName() { return metricStreamName; }
-        public void setMetricStreamName(String metricStreamName) { this.metricStreamName = metricStreamName; }
+        public String getMetricStreamName() {
+            return metricStreamName;
+        }
 
-        public String getAccountID() { return accountID; }
-        public void setAccountID(String accountID) { this.accountID = accountID; }
+        public void setMetricStreamName(String metricStreamName) {
+            this.metricStreamName = metricStreamName;
+        }
 
-        public String getRegion() { return region; }
-        public void setRegion(String region) { this.region = region; }
+        public String getMetricName() {
+            return metricName;
+        }
 
-        public String getNamespace() { return namespace; }
-        public void setNamespace(String namespace) { this.namespace = namespace; }
+        public void setMetricName(String metricName) {
+            this.metricName = metricName;
+        }
 
-        public String getMetricName() { return metricName; }
-        public void setMetricName(String metricName) { this.metricName = metricName; }
+        public Value getValue() {
+            return value;
+        }
 
-        public Map<String, Object> getDimensions() { return dimensions; }
-        public void setDimensions(Map<String, Object> dimensions) { this.dimensions = dimensions; }
-
-        public long getTimestamp() { return timestamp; }
-        public void setTimestamp(long timestamp) { this.timestamp = timestamp; }
-
-        public Value getValue() { return value; }
-        public void setValue(Value value) { this.value = value; }
-
-        public String getUnit() { return unit; }
-        public void setUnit(String unit) { this.unit = unit; }
+        public void setValue(Value value) {
+            this.value = value;
+        }
     }
 
-    // Value class
     public static class Value {
         private double count;
-        private double sum;
-        private double max;
-        private double min;
 
         public double getCount() {
             return count;
@@ -313,33 +235,8 @@ public class LambdaHandler implements RequestHandler<KinesisFirehoseEvent, Lambd
         public void setCount(double count) {
             this.count = count;
         }
-
-        public double getSum() {
-            return sum;
-        }
-
-        public void setSum(double sum) {
-            this.sum = sum;
-        }
-
-        public double getMax() {
-            return max;
-        }
-
-        public void setMax(double max) {
-            this.max = max;
-        }
-
-        public double getMin() {
-            return min;
-        }
-
-        public void setMin(double min) {
-            this.min = min;
-        }
     }
 
-    // KinesisFirehoseResponse class
     public static class KinesisFirehoseResponse {
         private List<Record> records;
 
@@ -375,9 +272,5 @@ public class LambdaHandler implements RequestHandler<KinesisFirehoseEvent, Lambd
         public enum Result {
             Ok, Dropped, ProcessingFailed
         }
-    }
-
-    public enum Values {
-        COUNT, SUM, MAX, MIN
     }
 }
